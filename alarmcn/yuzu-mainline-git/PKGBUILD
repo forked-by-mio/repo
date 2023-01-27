@@ -1,0 +1,88 @@
+# Maintainer: Brendan Szymanski <bscubed@pm.me>
+
+_pkgname=yuzu
+pkgname=$_pkgname-mainline-git
+pkgver=1316.r0.g1c43c3914
+pkgrel=1
+pkgdesc="An experimental open-source Nintendo Switch emulator/debugger (mainline GIT version)"
+arch=('aarch64')
+url="https://github.com/yuzu-emu/yuzu-mainline"
+license=('GPL2')
+depends=('boost-libs' 'shared-mime-info' 'hicolor-icon-theme' 'sdl2' 'qt5-base' 'qt5-multimedia' 'qt5-tools' 'libxkbcommon-x11' 'ffmpeg' 'fmt' 'libzip' 'opus' 'libfdk-aac' 'lz4' 'mbedtls' 'openssl' 'zstd' 'qt5-webengine')
+makedepends=('llvm' 'git' 'glslang' 'cmake' 'ninja' 'graphviz' 'doxygen' 'clang' 'boost' 'catch2' 'nlohmann-json' 'rapidjson' 'desktop-file-utils' 'robin-map')
+optdepends=('qt5-wayland: for Wayland support')
+provides=('yuzu')
+conflicts=('yuzu')
+replaces=('yuzu-canary-git')
+source=("$_pkgname::git+https://github.com/yuzu-emu/yuzu-mainline")
+md5sums=('SKIP')
+
+pkgver() {
+	cd "$srcdir/$_pkgname"
+  git describe --long --tags `git rev-list --tags --max-count=1` | sed 's/\([^-]*-g\)/r\1/;s/mainline-0-//g;s/-/./g'
+}
+
+prepare() {
+	cd "$srcdir/$_pkgname"
+
+	git submodule update --init --recursive
+}
+
+build() {
+	# Trick the compiler into thinking we're building from a continuous
+	# integration tool so the build number is correctly shown in the title
+	cd "$srcdir/$_pkgname"
+	export CI=true
+	export TRAVIS=true
+	export TRAVIS_REPO_SLUG=yuzu-emu/yuzu-mainline
+	export TRAVIS_TAG=$(git describe --tags)
+
+    find . -name "CMakeLists.txt" -exec sed -i 's/^.*-Werror$/-W/g' {} +
+    find . -name "CMakeLists.txt" -exec sed -i 's/^.*-Werror=.*$/ /g' {} +
+    find . -name "CMakeLists.txt" -exec sed -i 's/-Werror/-W/g' {} +
+
+    sed -i 's/static constexpr/const/g' src/shader_recompiler/frontend/maxwell/structured_control_flow.cpp
+	sed -i 's/add_subdirectory(mcl)/add_subdirectory(mcl EXCLUDE_FROM_ALL)/g' externals/dynarmic/externals/CMakeLists.txt
+
+    # Hopefully temporary fix for a compilation error involving fmt
+	#CXXFLAGS+=" -DFMT_USE_USER_DEFINED_LITERALS=0"
+
+	# Flag to disable pre-compiled headers so boost can build properly
+	# CXXFLAGS+=" -DENABLE_PRECOMPILED_HEADERS=OFF"
+
+	# Flag to fix SDL exceptions occurring in some users' builds
+	#CXXFLAGS+=" -I/usr/include/SDL2 -D_REENTRANT -pthread -lSDL2"
+
+  #CXXFLAGS+=" -I/usr/include/libusb-1.0"
+
+	mkdir -p build && cd build
+	cmake -GNinja .. \
+      -DCMAKE_C_COMPILER=clang \
+      -DCMAKE_CXX_COMPILER=clang++ \
+      -DCMAKE_C_FLAGS="$CFLAGS -flto=thin" \
+      -DCMAKE_CXX_FLAGS="$CXXFLAGS -flto=thin" \
+	  -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+      -DCMAKE_INSTALL_PREFIX=/usr \
+	  -DCMAKE_BUILD_TYPE=Release \
+	  -DYUZU_ENABLE_COMPATIBILITY_REPORTING=ON \
+	  -DENABLE_COMPATIBILITY_LIST_DOWNLOAD=ON \
+	  -DUSE_DISCORD_PRESENCE=ON \
+      -DYUZU_USE_QT_WEB_ENGINE=ON \
+      -DENABLE_QT_TRANSLATION=ON \
+      -DDYNARMIC_NO_BUNDLED_FMT=ON \
+      -DDYNARMIC_NO_BUNDLED_ROBIN_MAP=ON \
+      -DBUILD_REPOSITORY=yuzu-emu/yuzu-mainline \
+      -DBUILD_TAG=${pkgver} \
+      -DTITLE_BAR_FORMAT_IDLE="yuzu mainline | ${pkgver} {}" \
+      -DTITLE_BAR_FORMAT_RUNNING="yuzu mainline | ${pkgver} | {}" \
+      -DYUZU_USE_BUNDLED_OPUS=OFF \
+      -DYUZU_USE_EXTERNAL_SDL2=OFF \
+      -DYUZU_USE_BUNDLED_FFMPEG=OFF
+
+ ninja
+}
+
+package() {
+	cd "$srcdir/$_pkgname/build"
+	DESTDIR="$pkgdir" ninja install
+}
